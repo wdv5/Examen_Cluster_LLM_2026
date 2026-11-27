@@ -1,0 +1,181 @@
+# docker-compose.yml — Clúster LLM de 4 nodos (Perfil A)
+#
+# Requisitos:
+#   - Docker + Compose v2
+#   - NVIDIA driver + nvidia-container-toolkit
+#   - Modelo en ./models/<MODEL_FILE>
+#
+# Uso:
+#   cp .env.example .env
+#   docker compose build
+#   docker compose up -d
+#   docker compose logs -f master
+#
+# Notas:
+#   - Si tienes varias GPU, cambia `count: all` por `device_ids: ["0"]`, etc.
+#   - Si tienes una sola GPU, todos los contenedores la comparten; la partición
+#     de VRAM es lógica y debes documentarlo.
+#   - `mem_limit` y `memswap_limit` evitan swap (malo para LLM).
+
+services:
+  master:
+    build:
+      context: .
+      args:
+        LLAMA_CPP_REF: ${LLAMA_CPP_REF:-master}
+        CUDA_ARCHS: ${CUDA_ARCHS:-61;86;89}
+    image: llm-cluster:2026
+    container_name: master-node
+    hostname: master
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${MASTER_GPU:-0}
+    mem_limit: ${MASTER_MEM:-16g}
+    memswap_limit: ${MASTER_MEM:-16g}
+    mem_swappiness: 0
+    shm_size: "2gb"
+    cap_add:
+      - NET_ADMIN
+    ulimits:
+      memlock: -1
+    volumes:
+      - ./models:/models:ro
+      - ./logs:/logs
+      - ./scripts:/scripts:ro
+    ports:
+      - "8080:8080"
+    networks:
+      cluster:
+        ipv4_address: 10.0.50.11
+    depends_on:
+      - worker-1
+      - worker-2
+      - worker-3
+    command: >
+      llama-server
+      -m /models/${MODEL_FILE:-qwen2.5-7b-instruct-q8_0.gguf}
+      --rpc worker-1:50052,worker-2:50052,worker-3:50052
+      --tensor-split ${TENSOR_SPLIT:-1,1,1}
+      --n-gpu-layers 99
+      -c ${CTX:-4096}
+      -n ${N_PREDICT:-300}
+      --host 0.0.0.0
+      --port 8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  worker-1:
+    image: llm-cluster:2026
+    container_name: worker-1
+    hostname: worker-1
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${WORKER1_GPU:-1}
+    mem_limit: ${WORKER_MEM:-8g}
+    memswap_limit: ${WORKER_MEM:-8g}
+    mem_swappiness: 0
+    shm_size: "2gb"
+    cap_add:
+      - NET_ADMIN
+    ulimits:
+      memlock: -1
+    volumes:
+      - ./models:/models:ro
+      - ./logs:/logs
+      - ./scripts:/scripts:ro
+    networks:
+      cluster:
+        ipv4_address: 10.0.50.12
+    command: >
+      rpc-server
+      -H 0.0.0.0
+      -p 50052
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  worker-2:
+    image: llm-cluster:2026
+    container_name: worker-2
+    hostname: worker-2
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${WORKER2_GPU:-2}
+    mem_limit: ${WORKER_MEM:-8g}
+    memswap_limit: ${WORKER_MEM:-8g}
+    mem_swappiness: 0
+    shm_size: "2gb"
+    cap_add:
+      - NET_ADMIN
+    ulimits:
+      memlock: -1
+    volumes:
+      - ./models:/models:ro
+      - ./logs:/logs
+      - ./scripts:/scripts:ro
+    networks:
+      cluster:
+        ipv4_address: 10.0.50.13
+    command: >
+      rpc-server
+      -H 0.0.0.0
+      -p 50052
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  worker-3:
+    image: llm-cluster:2026
+    container_name: worker-3
+    hostname: worker-3
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${WORKER3_GPU:-3}
+    mem_limit: ${WORKER_MEM:-8g}
+    memswap_limit: ${WORKER_MEM:-8g}
+    mem_swappiness: 0
+    shm_size: "2gb"
+    cap_add:
+      - NET_ADMIN
+    ulimits:
+      memlock: -1
+    volumes:
+      - ./models:/models:ro
+      - ./logs:/logs
+      - ./scripts:/scripts:ro
+    networks:
+      cluster:
+        ipv4_address: 10.0.50.14
+    command: >
+      rpc-server
+      -H 0.0.0.0
+      -p 50052
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+networks:
+  cluster:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.0.50.0/24
